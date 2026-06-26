@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Crypto Sim</title>
+<style>
+  body { margin: 0; background: #4a6d8c; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: monospace; }
+  canvas { border: 2.5px solid #000; display: block; }
+  #controls { margin-top: 8px; color: #eee; font-size: 13px; display: flex; gap: 16px; }
+  button { background: #2a4a6a; color: #eee; border: 1px solid #7af; padding: 3px 12px; cursor: pointer; font-family: monospace; }
+  button:hover { background: #3a6a9a; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+  <button onclick="reset()">↺ Reset</button>
+  <span id="tick">t: 0</span>
+  <span>0 → 864s</span>
+</div>
+<script>
+const W = 1100, H = 520;
+const PAD = { l: 50, r: 80, t: 30, b: 40 };
+const DURATION = 864;
+const SPEED = 1; // ticks per frame
+
+const canvas = document.getElementById('c');
+canvas.width = W; canvas.height = H;
+const ctx = canvas.getContext('2d');
+
+// Chart area
+const cW = W - PAD.l - PAD.r;
+const cH = H - PAD.t - PAD.b;
+
+// Pairs: name, color, and a curve function (t: 0..1 → normalized y)
+// y = 0 is baseline, positive = up
+const pairs = [
+  {
+    name: 'BTC', color: '#5577ff',
+    fn: t => t < 0.55
+      ? 2.8 * t * Math.pow(1 - t * 0.6, 2)
+      : 2.8 * 0.55 * Math.pow(1 - 0.55 * 0.6, 2) - (t - 0.55) * 0.3
+  },
+  {
+    name: 'ETH', color: '#44cc66',
+    fn: t => t < 0.48
+      ? 2.2 * t * Math.pow(1 - t * 0.5, 2)
+      : 2.2 * 0.48 * Math.pow(1 - 0.48 * 0.5, 2) - (t - 0.48) * 0.25
+  },
+  {
+    name: 'TRX', color: '#cc44aa',
+    fn: t => {
+      const peak = 0.68;
+      if (t < peak) return 1.4 * Math.pow(t / peak, 1.5);
+      return 1.4 - (t - peak) * 4.5;
+    }
+  },
+  {
+    name: 'LTC', color: '#22aadd',
+    fn: t => {
+      const peak = 0.55;
+      if (t < peak) return 1.6 * Math.pow(t / peak, 1.2);
+      return 1.6 - (t - peak) * 7.0;
+    }
+  }
+];
+
+// Pre-compute y range across all pairs for scaling
+const samples = 200;
+let yMin = 0, yMax = 0;
+pairs.forEach(p => {
+  for (let i = 0; i <= samples; i++) {
+    const v = p.fn(i / samples);
+    if (v < yMin) yMin = v;
+    if (v > yMax) yMax = v;
+  }
+});
+const yRange = yMax - yMin;
+const yPad = yRange * 0.1;
+
+function mapX(tick) {
+  return PAD.l + (tick / DURATION) * cW;
+}
+function mapY(val) {
+  return PAD.t + cH - ((val - yMin + yPad) / (yRange + yPad * 2)) * cH;
+}
+
+let tick = 0;
+let animId;
+let history = pairs.map(() => []); // store {x,y} per pair
+
+function reset() {
+  tick = 0;
+  history = pairs.map(() => []);
+}
+
+function drawAxes() {
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(PAD.l, PAD.t); ctx.lineTo(PAD.l, PAD.t + cH);
+  ctx.lineTo(PAD.l + cW, PAD.t + cH);
+  ctx.stroke();
+
+  // tick marks x
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#111';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'center';
+  for (let i = 0; i <= 10; i++) {
+    const x = PAD.l + (i / 10) * cW;
+    const label = Math.round(i / 10 * DURATION);
+    ctx.beginPath(); ctx.moveTo(x, PAD.t + cH); ctx.lineTo(x, PAD.t + cH + 5); ctx.stroke();
+    if (i === 0 || i === 10) ctx.fillText(label, x, PAD.t + cH + 16);
+  }
+
+  // Y tick marks
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 5; i++) {
+    const y = PAD.t + (i / 5) * cH;
+    ctx.beginPath(); ctx.moveTo(PAD.l - 4, y); ctx.lineTo(PAD.l, y); ctx.stroke();
+  }
+}
+
+function drawBaseline() {
+  const y = mapY(0);
+  ctx.strokeStyle = '#ffee00';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(PAD.l, y);
+  ctx.lineTo(PAD.l + cW, y);
+  ctx.stroke();
+}
+
+function drawLines() {
+  pairs.forEach((p, i) => {
+    const pts = history[i];
+    if (pts.length < 2) return;
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let k = 1; k < pts.length; k++) {
+      ctx.lineTo(pts[k].x, pts[k].y);
+    }
+    ctx.stroke();
+
+    // Label at end point
+    const last = pts[pts.length - 1];
+    ctx.fillStyle = p.color;
+    ctx.font = '13px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(p.name, last.x + 4, last.y + 4);
+  });
+}
+
+function frame() {
+  // Update history
+  const t = tick / DURATION;
+  pairs.forEach((p, i) => {
+    const x = mapX(tick);
+    const y = mapY(p.fn(t));
+    history[i].push({ x, y });
+  });
+
+  // Draw
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#4a6d8c';
+  ctx.fillRect(0, 0, W, H);
+  drawAxes();
+  drawBaseline();
+  drawLines();
+
+  document.getElementById('tick').textContent = 't: ' + tick;
+
+  tick += SPEED;
+  if (tick > DURATION) {
+    tick = 0;
+    history = pairs.map(() => []);
+  }
+
+  animId = requestAnimationFrame(frame);
+}
+
+frame();
+</script>
+</body>
+</html>
